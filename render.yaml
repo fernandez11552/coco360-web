@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: coco360
+    runtime: static
+    buildCommand: echo "COCO 360 listo para publicar"
+    staticPublishPath: .
+    autoDeployTrigger: commit
