@@ -90,54 +90,198 @@ function envioPorWhatsApp(msg){
   // Navegar en la misma pestaña evita que el navegador bloquee ventanas tras una petición asíncrona.
   window.location.assign('https://wa.me/'+WHATSAPP_NEGOCIO+'?text='+encodeURIComponent(msg));
 }
-document.getElementById('orderForm').addEventListener('submit', async e=>{
+let codigoPedidoPendiente = null;
+let enviandoPedido = false;
+
+document.getElementById('orderForm').addEventListener('submit', async (e) => {
   e.preventDefault();
-  if(!cantidades.some(Boolean)){
-    alert('Agrega por lo menos una bebida al carrito.');
-    document.getElementById('bebidas').scrollIntoView({behavior:'smooth'});
+
+  const status = document.getElementById('orderStatus');
+  const btn = document.getElementById('submitOrderBtn');
+  const get = (id) => document.getElementById(id).value.trim();
+
+  if (!cantidades.some(Boolean)) {
+    status.textContent = 'Agrega por lo menos una bebida al carrito.';
+    document.getElementById('bebidas').scrollIntoView({
+      behavior: 'smooth'
+    });
     return;
   }
-  const get=id=>document.getElementById(id).value.trim();
-  if(!/^9\d{8}$/.test(get('phone').replace(/\s/g,''))){document.getElementById('orderStatus').textContent='Ingresa un teléfono peruano de 9 dígitos que comience con 9.';return;}
-  const lines=productos.map((p,i)=>cantidades[i]?`• ${cantidades[i]} × ${p.nombre} — ${money(cantidades[i]*p.precio)}`:null).filter(Boolean);
-  const subtotal=productos.reduce((s,p,i)=>s+p.precio*cantidades[i],0);
-  const envio=COSTO_DELIVERY_BAGUA;
-  const total=subtotal+envio;
-  const codigoPedido=nuevoCodigoPedido();
-  const status=document.getElementById('orderStatus');
-  const btn=document.getElementById('submitOrderBtn');
-  let registrado=false;
-  if(autoConfigurado()){
-    const token=window.turnstile && cocoTurnstileWidget!==null ? window.turnstile.getResponse(cocoTurnstileWidget):'';
-    if(!token){status.textContent='Completa la verificación de seguridad antes de continuar.';return;}
-    btn.disabled=true;
-    status.textContent='Registrando pedido de forma segura…';
-    try{
-      const controller=new AbortController();
-      const timeout=setTimeout(()=>controller.abort(),12000);
+
+  const telefono = get('phone').replace(/\s/g, '');
+
+  if (!/^9\d{8}$/.test(telefono)) {
+    status.textContent =
+      'Ingresa un teléfono peruano válido de 9 dígitos que comience con 9.';
+    return;
+  }
+
+  const lines = productos
+    .map((p, i) =>
+      cantidades[i]
+        ? `• ${cantidades[i]} × ${p.nombre} — ${money(cantidades[i] * p.precio)}`
+        : null
+    )
+    .filter(Boolean);
+
+  const subtotal = productos.reduce(
+    (s, p, i) => s + p.precio * cantidades[i],
+    0
+  );
+
+  const envio = COSTO_DELIVERY_BAGUA;
+  const total = subtotal + envio;
+  const codigoPedido = nuevoCodigoPedido();
+
+  let registrado = false;
+
+  btn.disabled = true;
+
+  try {
+    if (autoConfigurado()) {
+      const token =
+        window.turnstile && cocoTurnstileWidget !== null
+          ? window.turnstile.getResponse(cocoTurnstileWidget)
+          : '';
+
+      if (!token) {
+        status.textContent =
+          'Completa la verificación de seguridad antes de continuar.';
+        return;
+      }
+
+      status.textContent = 'Registrando tu pedido de forma segura...';
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 12000);
+
       let response;
-      try{
-        response=await fetch(AUTO.endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_code:codigoPedido,customer_name:get('name'),customer_phone:get('phone').replace(/\s/g,''),delivery_address:get('address'),district:get('district'),payment_method:get('pay'),items:productos.map((p,i)=>({product_id:i,qty:cantidades[i]})).filter(i=>i.qty>0),turnstile_token:token}),signal:controller.signal});
-      }finally{clearTimeout(timeout);}
-      const data=await response.json().catch(()=>({}));
-      if(!response.ok || !data.ok || data.order_code!==codigoPedido) throw new Error(data.error||'El servidor no confirmó el pedido.');
-      registrado=true;
-      status.textContent='Pedido registrado. Continuando a WhatsApp para solicitar la confirmación de entrega.';
-    }catch(error){
-      status.textContent='No se pudo registrar automáticamente: '+(error.message||'Error de red')+'. Puedes enviarlo por WhatsApp, pero NO aparecerá automáticamente en el panel.';
-      if(!confirm(status.textContent+' ¿Continuar solo por WhatsApp?')){
-        if(window.turnstile && cocoTurnstileWidget!==null) window.turnstile.reset(cocoTurnstileWidget);
-        btn.disabled=false;return;
+
+      try {
+        response = await fetch(AUTO.endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            order_code: codigoPedido,
+            customer_name: get('name'),
+            customer_phone: telefono,
+            delivery_address: get('address'),
+            district: get('district'),
+            payment_method: get('pay'),
+            items: productos
+              .map((p, i) => ({
+                product_id: i,
+                qty: cantidades[i]
+              }))
+              .filter(item => item.qty > 0),
+            turnstile_token: token
+          }),
+          signal: controller.signal
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok || !data.ok || data.order_code !== codigoPedido) {
+        throw new Error(
+          data.error || `El servidor no confirmó el pedido (HTTP ${response.status}).`
+        );
+      }
+
+      registrado = true;
+      status.textContent =
+        'Pedido registrado correctamente. Continuando a WhatsApp.';
+    }
+
+    guardarUltimoCodigo(codigoPedido);
+
+    document.getElementById('trackingCode').value = codigoPedido;
+
+    const msg = [
+      '¡Hola, COCO 360! Quisiera solicitar un pedido a domicilio.',
+      `Código de pedido: ${codigoPedido}`,
+      `Registro en panel: ${registrado ? 'Sí, pendiente de confirmación' : 'No, registrar manualmente'}`,
+      '',
+      ...lines,
+      '',
+      `Subtotal de bebidas: ${money(subtotal)}`,
+      `Delivery en Bagua: ${money(envio)}`,
+      `TOTAL: ${money(total)}`,
+      '',
+      `Nombre: ${get('name')}`,
+      `Teléfono: ${telefono}`,
+      `Zona: ${get('district')}`,
+      `Dirección: ${get('address')}`,
+      `Pago preferido: ${get('pay')}`,
+      'Estado del pago: pendiente de confirmación manual',
+      '',
+      'Por favor, confirmen disponibilidad y entrega.',
+      'El pedido no se considera aceptado hasta recibir respuesta del negocio.'
+    ].join('\n');
+
+    if (/^51\d{9}$/.test(WHATSAPP_NEGOCIO)) {
+      envioPorWhatsApp(msg);
+    } else {
+      status.textContent =
+        'Número del negocio no configurado. Copia el pedido y envíalo manualmente.';
+
+      const el = document.createElement('textarea');
+      el.value = msg;
+      el.readOnly = true;
+      status.appendChild(el);
+    }
+
+  } catch (error) {
+    const motivo =
+      error.name === 'AbortError'
+        ? 'El servidor tardó demasiado en responder.'
+        : (error.message || 'Error de conexión.');
+
+    status.textContent =
+      'No se pudo registrar automáticamente: ' + motivo +
+      ' El pedido todavía no está confirmado en el panel.';
+
+    const continuar = confirm(
+      status.textContent +
+      '\n\n¿Quieres continuar solo por WhatsApp?'
+    );
+
+    if (continuar) {
+      guardarUltimoCodigo(codigoPedido);
+      document.getElementById('trackingCode').value = codigoPedido;
+
+      const msg = [
+        'Hola, COCO 360.',
+        'Solicito registrar manualmente este pedido.',
+        `Código: ${codigoPedido}`,
+        ...lines,
+        `Subtotal: ${money(subtotal)}`,
+        `Delivery: ${money(envio)}`,
+        `Total: ${money(total)}`,
+        `Nombre: ${get('name')}`,
+        `Teléfono: ${telefono}`,
+        `Zona: ${get('district')}`,
+        `Dirección: ${get('address')}`,
+        `Pago: ${get('pay')}`,
+        'Pedido pendiente de confirmación.'
+      ].join('\n');
+
+      if (/^51\d{9}$/.test(WHATSAPP_NEGOCIO)) {
+        envioPorWhatsApp(msg);
       }
     }
-    btn.disabled=false;
-    if(window.turnstile && cocoTurnstileWidget!==null) window.turnstile.reset(cocoTurnstileWidget);
+
+  } finally {
+    btn.disabled = false;
+
+    if (window.turnstile && cocoTurnstileWidget !== null) {
+      window.turnstile.reset(cocoTurnstileWidget);
+    }
   }
-  guardarUltimoCodigo(codigoPedido);
-  document.getElementById('trackingCode').value=codigoPedido;
-  const msg=`¡Hola, COCO 360! Quisiera solicitar un pedido a domicilio.\nCódigo de pedido: ${codigoPedido}\nRegistro en panel: ${registrado?'Sí, pendiente de confirmación':'No, registrar manualmente'}\n\n${lines.join('\n')}\n\nSubtotal de bebidas: ${money(subtotal)}\nDelivery en Bagua: ${money(envio)}\nTOTAL: ${money(total)}\n\nNombre: ${get('name')}\nTeléfono: ${get('phone')}\nZona: ${get('district')}\nDirección: ${get('address')}\nPago preferido: ${get('pay')}\nEstado del pago: pendiente de confirmación manual\nPor favor, confirmen disponibilidad y entrega. El pedido no se considera aceptado hasta recibir respuesta del negocio.`;
-  if(/^51\d{9}$/.test(WHATSAPP_NEGOCIO)) envioPorWhatsApp(msg);
-  else {status.textContent='Número del negocio no configurado. Copia el pedido y envíalo manualmente.';const el=document.createElement('textarea');el.value=msg;el.readOnly=true;status.appendChild(el);}
 });
 
 function nuevoCodigoPedido(){
